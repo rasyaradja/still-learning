@@ -1,12 +1,13 @@
 const getCourses = async (db, isPublished) => {
-  const [rows] = await db.query(`
+  const result = await db.query(`
     SELECT c.*, u.name as author_name, u.id as author_id 
     FROM courses c 
     JOIN users u ON c.author_id = u.id 
-    WHERE c.isPublished = ? 
+    WHERE c."isPublished" = $1 
     ORDER BY c.created_at DESC
   `, [isPublished]);
 
+  const rows = result.rows;
   return rows.map(course => ({
     id: course.id,
     title: course.title,
@@ -29,14 +30,15 @@ const getCourses = async (db, isPublished) => {
 };
 
 const getComments = async (db, courseId) => {
-  const [rows] = await db.query(`
+  const result = await db.query(`
     SELECT c.*, u.name as author_name, u.id as author_id 
     FROM comments c 
     JOIN users u ON c.author_id = u.id 
-    WHERE c.course_id = ? 
+    WHERE c.course_id = $1 
     ORDER BY c.created_at ASC
   `, [courseId]);
 
+  const rows = result.rows;
   // Transform to nested structure
   return rows
     .filter(comment => !comment.parent_id)

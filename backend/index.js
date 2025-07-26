@@ -45,15 +45,10 @@ const upload = multer({
   }
 });
 
-// Middleware untuk koneksi DB
-app.use(async (req, res, next) => {
-  try {
-    req.db = await pool.getConnection();
-    next();
-  } catch (error) {
-    console.error('Gagal koneksi ke database:', error);
-    res.status(500).json({ error: 'Gagal koneksi ke database' });
-  }
+// Middleware untuk koneksi DB (PostgreSQL)
+app.use((req, res, next) => {
+  req.db = pool; // PostgreSQL pool doesn't need getConnection
+  next();
 });
 
 // Serve static files
@@ -68,7 +63,8 @@ app.post('/api/login', async (req, res) => {
     return res.status(400).json({ error: 'Email dan password harus diisi' });
   }
   try {
-    const [rows] = await req.db.query('SELECT * FROM users WHERE email = ?', [email]);
+    const result = await req.db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const rows = result.rows;
     if (rows.length === 0) {
       return res.status(401).json({ error: 'User tidak ditemukan' });
     }
@@ -86,8 +82,6 @@ app.post('/api/login', async (req, res) => {
   } catch (error) {
     console.error('Error login:', error);
     res.status(500).json({ error: 'Gagal login' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -98,19 +92,18 @@ app.post('/api/register', async (req, res) => {
     return res.status(400).json({ error: 'Nama, email, dan password harus diisi' });
   }
   try {
-    const [existing] = await req.db.query('SELECT * FROM users WHERE email = ?', [email]);
+    const existingResult = await req.db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const existing = existingResult.rows;
     if (existing.length > 0) {
       return res.status(409).json({ error: 'Email sudah terdaftar' });
     }
     const hashedPassword = await bcrypt.hash(password, 10);
-    const [result] = await req.db.query('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)', [name, email, hashedPassword, 'user']);
-    const newUser = { id: result.insertId, name, email, role: 'user' };
+    const result = await req.db.query('INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id', [name, email, hashedPassword, 'user']);
+    const newUser = { id: result.rows[0].id, name, email, role: 'user' };
     res.status(201).json(newUser);
   } catch (error) {
     console.error('Error register:', error);
     res.status(500).json({ error: 'Gagal registrasi' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -124,22 +117,21 @@ app.put('/api/users/:id', verifyToken, async (req, res) => {
   }
   
   try {
-    const [result] = await req.db.query(
-      'UPDATE users SET name = ?, email = ?, avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    const result = await req.db.query(
+      'UPDATE users SET name = $1, email = $2, avatar = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
       [name, email, avatar, id]
     );
     
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'User tidak ditemukan' });
     }
     
-    const [updatedUser] = await req.db.query('SELECT id, name, email, role, avatar FROM users WHERE id = ?', [id]);
+    const updatedUserResult = await req.db.query('SELECT id, name, email, role, avatar FROM users WHERE id = $1', [id]);
+    const updatedUser = updatedUserResult.rows;
     res.json(updatedUser[0]);
   } catch (error) {
     console.error('Error update profile:', error);
     res.status(500).json({ error: 'Gagal update profil' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -155,8 +147,6 @@ app.get('/api/courses', async (req, res) => {
   } catch (error) {
     console.error('Error fetching courses:', error);
     res.status(500).json({ error: 'Gagal mengambil data courses' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -168,8 +158,6 @@ app.get('/api/courses/pending', verifyToken, isAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error fetching pending courses:', error);
     res.status(500).json({ error: 'Gagal mengambil data pending courses' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -178,12 +166,13 @@ app.get('/api/courses/:id', async (req, res) => {
   const { id } = req.params;
   
   try {
-    const [courseRows] = await req.db.query(`
+    const courseResult = await req.db.query(`
       SELECT c.*, u.name as author_name, u.id as author_id 
       FROM courses c 
       JOIN users u ON c.author_id = u.id 
-      WHERE c.id = ?
+      WHERE c.id = $1
     `, [id]);
+    const courseRows = courseResult.rows;
     
     if (courseRows.length === 0) {
       return res.status(404).json({ error: 'Course tidak ditemukan' });
@@ -216,8 +205,6 @@ app.get('/api/courses/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching course:', error);
     res.status(500).json({ error: 'Gagal mengambil data course' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -243,20 +230,18 @@ app.post('/api/courses', verifyToken, upload.single('file'), async (req, res) =>
       fileType = req.file.mimetype;
     }
     
-    const [result] = await req.db.query(`
+    const result = await req.db.query(`
       INSERT INTO courses (title, description, content, contentType, thumbnailUrl, author_id, fileName, fileSize, fileType, filePath, isPublished) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE) RETURNING id
     `, [title, description, content, contentType, thumbnailUrl || 'https://picsum.photos/seed/course/600/400', authorId, fileName, fileSize, fileType, filePath]);
     
     res.status(201).json({ 
-      id: result.insertId, 
+      id: result.rows[0].id, 
       message: 'Course berhasil disubmit untuk review' 
     });
   } catch (error) {
     console.error('Error submitting course:', error);
     res.status(500).json({ error: 'Gagal submit course' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -265,12 +250,12 @@ app.put('/api/courses/:id/approve', verifyToken, isAdmin, async (req, res) => {
   const { id } = req.params;
   
   try {
-    const [result] = await req.db.query(
-      'UPDATE courses SET isPublished = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    const result = await req.db.query(
+      'UPDATE courses SET isPublished = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
       [id]
     );
     
-    if (result.affectedRows === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Course tidak ditemukan' });
     }
     
@@ -278,8 +263,6 @@ app.put('/api/courses/:id/approve', verifyToken, isAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error approving course:', error);
     res.status(500).json({ error: 'Gagal approve course' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -296,18 +279,19 @@ app.post('/api/courses/:courseId/comments', verifyToken, async (req, res) => {
   }
   
   try {
-    const [result] = await req.db.query(
-      'INSERT INTO comments (course_id, author_id, text, parent_id) VALUES (?, ?, ?, ?)',
+    const result = await req.db.query(
+      'INSERT INTO comments (course_id, author_id, text, parent_id) VALUES ($1, $2, $3, $4) RETURNING id',
       [courseId, authorId, text, parentId || null]
     );
     
     // Get the created comment with author info
-    const [commentRows] = await req.db.query(`
+    const commentResult = await req.db.query(`
       SELECT c.*, u.name as author_name, u.id as author_id 
       FROM comments c 
       JOIN users u ON c.author_id = u.id 
-      WHERE c.id = ?
-    `, [result.insertId]);
+      WHERE c.id = $1
+    `, [result.rows[0].id]);
+    const commentRows = commentResult.rows;
     
     const comment = {
       id: commentRows[0].id,
@@ -324,8 +308,6 @@ app.post('/api/courses/:courseId/comments', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('Error adding comment:', error);
     res.status(500).json({ error: 'Gagal menambah komentar' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
@@ -334,13 +316,14 @@ app.get('/api/courses/:courseId/comments', async (req, res) => {
   const { courseId } = req.params;
   
   try {
-    const [rows] = await req.db.query(`
+    const commentsResult = await req.db.query(`
       SELECT c.*, u.name as author_name, u.id as author_id 
       FROM comments c 
       JOIN users u ON c.author_id = u.id 
-      WHERE c.course_id = ? 
+      WHERE c.course_id = $1 
       ORDER BY c.created_at ASC
     `, [courseId]);
+    const rows = commentsResult.rows;
     
     // Transform to nested structure
     const comments = rows
@@ -371,8 +354,6 @@ app.get('/api/courses/:courseId/comments', async (req, res) => {
   } catch (error) {
     console.error('Error fetching comments:', error);
     res.status(500).json({ error: 'Gagal mengambil komentar' });
-  } finally {
-    if (req.db) req.db.release();
   }
 });
 
