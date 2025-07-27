@@ -1,6 +1,6 @@
 const API_BASE_URL =
 	process.env.NODE_ENV === 'production'
-		? 'https://still-learning-5vt9zdqk7-rasyas-projects-183c933f.vercel.app/' // Replace with your actual backend URL
+		? import.meta.env.VITE_APP_BACKEND_URL
 		: 'http://localhost:4000/api';
 
 const getAuthHeaders = () => {
